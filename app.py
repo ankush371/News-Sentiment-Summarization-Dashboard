@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 NEWS_API_URL         = 'https://newsapi.org/v2/everything'
-MAX_ARTICLES         = 20
+MAX_ARTICLES         = 30
 REQUEST_TIMEOUT      = 10
 SENTIMENT_MODEL      = 'ProsusAI/finbert'           # trained on financial/tech news
 SUMMARIZATION_MODEL  = 'sshleifer/distilbart-cnn-12-6'
