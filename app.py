@@ -73,11 +73,11 @@ NEWS_API_KEY  = os.environ.get('NEWS_API_KEY', '').strip()
 GROQ_API_KEY  = os.environ.get('GROQ_API_KEY', '').strip()
 
 if not NEWS_API_KEY:
-    st.error('⚠️ NEWS_API_KEY is not set. Add it to your .env file.')
+    st.error(' NEWS_API_KEY is not set. Add it to your .env file.')
     st.stop()
 
 if not GROQ_API_KEY:
-    st.warning('⚠️ GROQ_API_KEY is not set — Impact Analysis will be disabled. Add it to your .env file.')
+    st.warning(' GROQ_API_KEY is not set — Impact Analysis will be disabled. Add it to your .env file.')
 
 # ─── Model Loaders ────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
@@ -294,11 +294,11 @@ def chart_radar(impact_data: dict):
 # ─── Article Cards ─────────────────────────────────────────────────────────────
 def render_articles(df: pd.DataFrame):
     for _, row in df.iterrows():
-        badge = (f'<span class="badge-pos">✅ POSITIVE {row["sentiment_score"]:.0%}</span>'
+        badge = (f'<span class="badge-pos"> POSITIVE {row["sentiment_score"]:.0%}</span>'
                  if row['sentiment_label'] == 'positive'
-                 else f'<span class="badge-neg">🔴 NEGATIVE {row["sentiment_score"]:.0%}</span>'
+                 else f'<span class="badge-neg"> NEGATIVE {row["sentiment_score"]:.0%}</span>'
                  if row['sentiment_label'] == 'negative'
-                 else f'<span style="background:#f0f0f0;color:#555;border-radius:4px;padding:1px 7px;font-size:0.78rem;">⚪ NEUTRAL {row["sentiment_score"]:.0%}</span>')
+                 else f'<span style="background:#f0f0f0;color:#555;border-radius:4px;padding:1px 7px;font-size:0.78rem;"> NEUTRAL {row["sentiment_score"]:.0%}</span>')
         date_str = row['publishedAt'].strftime('%b %d, %Y')
         with st.expander(f"{row['title']}"):
             st.markdown(
@@ -311,19 +311,19 @@ def render_articles(df: pd.DataFrame):
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown('### 📰 News Sentiment Dashboard')
+    st.markdown('###  News Sentiment Dashboard')
     st.divider()
     topic      = st.text_input('Search Topic', placeholder='e.g. War, Tesla, AI...')
     max_art    = st.slider('Number of Articles', 5, 20, 15, 5)
-    run_button = st.button('🔍 Analyze', use_container_width=True, type='primary')
+    run_button = st.button(' Analyze', use_container_width=True, type='primary')
     st.divider()
 
     if st.session_state.history:
-        st.markdown('**🕘 Search History**')
+        st.markdown('** Search History**')
         for i, h in enumerate(reversed(st.session_state.history[-8:])):
             col1, col2 = st.columns([4, 1])
             with col1:
-                if st.button(f"📌 {h['topic']}", key=f'hist_{i}', use_container_width=True):
+                if st.button(f" {h['topic']}", key=f'hist_{i}', use_container_width=True):
                     st.session_state.results = h
             with col2:
                 st.caption(h['time'])
@@ -335,7 +335,7 @@ with st.sidebar:
     st.caption('News: NewsAPI')
 
 # ─── Header ───────────────────────────────────────────────────────────────────
-st.markdown('<p class="main-title">📰 News Sentiment Dashboard</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title"> News Sentiment Dashboard</p>', unsafe_allow_html=True)
 st.markdown('<p class="subtitle">Live news · AI sentiment · impact analysis · deep dive articles</p>', unsafe_allow_html=True)
 st.divider()
 
@@ -347,7 +347,7 @@ if run_button:
 
     steps = st.status('Analyzing...', expanded=True)
     with steps:
-        st.write('📡 Fetching articles...')
+        st.write(' Fetching articles...')
         try:
             articles = fetch_articles(NEWS_API_KEY, topic.strip(), max_art)
         except RuntimeError as e:
@@ -364,13 +364,13 @@ if run_button:
             st.warning('No articles found. Try a different topic.')
             st.stop()
 
-        st.write('🧹 Cleaning data...')
+        st.write(' Cleaning data...')
         df = clean_articles(articles)
 
-        st.write('🤖 Running sentiment analysis...')
+        st.write(' Running sentiment analysis...')
         df = run_sentiment(df)
 
-        st.write('📝 Generating summary...')
+        st.write(' Generating summary...')
         summary = ''
         try:
             summary = run_summarization(df)
@@ -379,7 +379,7 @@ if run_button:
 
         impact_data = None
         if GROQ_API_KEY and summary:
-            st.write('🌐 Analysing broader impact with Groq LLaMA...')
+            st.write(' Analysing broader impact with Groq LLaMA...')
             pos_ratio   = (df['sentiment_label'] == 'positive').mean()
             impact_data = run_impact_analysis(topic.strip(), summary, pos_ratio)
 
@@ -407,20 +407,20 @@ if res:
     rtopic      = res['topic']
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric('📄 Articles',        len(df))
-    c2.metric('🟢 Positive',        int((df['sentiment_label'] == 'positive').sum()))
-    c3.metric('🔴 Negative',        int((df['sentiment_label'] == 'negative').sum()))
-    c4.metric('⚪ Neutral',         int((df['sentiment_label'] == 'neutral').sum()))
-    c5.metric('📊 Avg Confidence',  f"{res['avg_score']:.0%}")
+    c1.metric(' Articles',        len(df))
+    c2.metric(' Positive',        int((df['sentiment_label'] == 'positive').sum()))
+    c3.metric(' Negative',        int((df['sentiment_label'] == 'negative').sum()))
+    c4.metric(' Neutral',         int((df['sentiment_label'] == 'neutral').sum()))
+    c5.metric(' Avg Confidence',  f"{res['avg_score']:.0%}")
     st.divider()
 
     if summary:
-        st.subheader('🧠 Executive Summary')
+        st.subheader(' Executive Summary')
         st.markdown(f'<div class="summary-box">{summary}</div>', unsafe_allow_html=True)
         st.divider()
 
     if impact_data:
-        st.subheader('🌐 Broader Impact Analysis')
+        st.subheader(' Broader Impact Analysis')
         st.info(f"**{impact_data.get('headline_impact', '')}**")
         left, right = st.columns([1, 1])
         with left:
@@ -440,7 +440,7 @@ if res:
                 )
         st.divider()
 
-    st.subheader('📊 Visual Insights')
+    st.subheader(' Visual Insights')
     tab1, tab2, tab3 = st.tabs(['Sentiment Split', 'Trend Over Time', 'By Source'])
     with tab1:
         chart_sentiment_pie_and_hist(df, rtopic)
@@ -450,7 +450,7 @@ if res:
         chart_by_source(df, rtopic)
     st.divider()
 
-    st.subheader('📋 Articles')
+    st.subheader(' Articles')
     filter_col, _ = st.columns([2, 3])
     with filter_col:
         sentiment_filter = st.radio('Filter by sentiment',
@@ -476,7 +476,7 @@ if res:
     ts         = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
 
     st.download_button(
-        '⬇️ Download Full Results as CSV',
+        '⬇ Download Full Results as CSV',
         data=csv,
         file_name=f'news_sentiment_{safe_topic}_{ts}.csv',
         mime='text/csv',
