@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 NEWS_API_URL         = 'https://newsapi.org/v2/everything'
-MAX_ARTICLES         = 30
+MAX_ARTICLES         = 20
 REQUEST_TIMEOUT      = 10
 SENTIMENT_MODEL      = 'ProsusAI/finbert'           # trained on financial/tech news
 SUMMARIZATION_MODEL  = 'sshleifer/distilbart-cnn-12-6'
@@ -36,29 +36,264 @@ st.set_page_config(page_title='News Sentiment Dashboard', page_icon='📰', layo
 
 st.markdown("""
 <style>
-    .block-container { padding-top: 1.5rem; }
-    .main-title { font-size: 2.2rem; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 0; }
-    .subtitle   { color: #888; font-size: 0.95rem; margin-top: 0.1rem; }
+    @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;400;600;800&display=swap');
+
+    /* ── Global dark theme ── */
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {
+        background-color: #070b14 !important;
+        color: #c8d8e8 !important;
+    }
+    [data-testid="stMain"], .main, .block-container {
+        background-color: #070b14 !important;
+        padding-top: 1.8rem !important;
+        font-family: 'Exo 2', sans-serif !important;
+    }
+
+    /* ── Sidebar ── */
+    [data-testid="stSidebar"] {
+        background: #0b1120 !important;
+        border-right: 1px solid #0ff2 !important;
+    }
+    [data-testid="stSidebar"] * { color: #a0c4d8 !important; font-family: 'Exo 2', sans-serif !important; }
+    [data-testid="stSidebar"] .stButton > button {
+        background: transparent !important;
+        border: 1px solid #0ff4 !important;
+        color: #00e5ff !important;
+        font-family: 'Share Tech Mono', monospace !important;
+        font-size: 0.78rem !important;
+        letter-spacing: 0.05em !important;
+        transition: all 0.2s !important;
+    }
+    [data-testid="stSidebar"] .stButton > button:hover {
+        background: #00e5ff18 !important;
+        border-color: #00e5ff !important;
+        box-shadow: 0 0 12px #00e5ff44 !important;
+    }
+
+    /* ── Primary Analyze button ── */
+    [data-testid="stSidebar"] .stButton > button[kind="primary"],
+    button[kind="primary"] {
+        background: linear-gradient(135deg, #00b4d8, #00e5ff) !important;
+        border: none !important;
+        color: #070b14 !important;
+        font-weight: 700 !important;
+        font-family: 'Exo 2', sans-serif !important;
+        letter-spacing: 0.08em !important;
+        box-shadow: 0 0 20px #00e5ff55 !important;
+        transition: all 0.3s !important;
+    }
+    button[kind="primary"]:hover {
+        box-shadow: 0 0 35px #00e5ff88 !important;
+        transform: translateY(-1px) !important;
+    }
+
+    /* ── Text inputs & sliders ── */
+    [data-testid="stTextInput"] input {
+        background: #0f1a2e !important;
+        border: 1px solid #0ff3 !important;
+        color: #00e5ff !important;
+        font-family: 'Share Tech Mono', monospace !important;
+        border-radius: 4px !important;
+    }
+    [data-testid="stTextInput"] input:focus {
+        border-color: #00e5ff !important;
+        box-shadow: 0 0 10px #00e5ff33 !important;
+    }
+    [data-testid="stSlider"] * { color: #00e5ff !important; }
+
+    /* ── Metric cards ── */
+    [data-testid="metric-container"] {
+        background: #0b1627 !important;
+        border: 1px solid #0ff2 !important;
+        border-radius: 8px !important;
+        padding: 1rem 1.2rem !important;
+        box-shadow: 0 0 20px #00e5ff0a !important;
+        transition: box-shadow 0.3s !important;
+    }
+    [data-testid="metric-container"]:hover {
+        box-shadow: 0 0 30px #00e5ff22 !important;
+        border-color: #00e5ff44 !important;
+    }
+    [data-testid="stMetricValue"] {
+        font-family: 'Share Tech Mono', monospace !important;
+        color: #00e5ff !important;
+        font-size: 1.8rem !important;
+    }
+    [data-testid="stMetricLabel"] {
+        color: #5d8a9e !important;
+        font-size: 0.72rem !important;
+        letter-spacing: 0.12em !important;
+        text-transform: uppercase !important;
+    }
+
+    /* ── Tabs ── */
+    [data-testid="stTabs"] [role="tablist"] {
+        border-bottom: 1px solid #0ff2 !important;
+        gap: 0 !important;
+    }
+    [data-testid="stTabs"] button[role="tab"] {
+        background: transparent !important;
+        color: #4a7a8e !important;
+        font-family: 'Share Tech Mono', monospace !important;
+        font-size: 0.8rem !important;
+        letter-spacing: 0.1em !important;
+        border: none !important;
+        padding: 0.5rem 1.2rem !important;
+        transition: all 0.2s !important;
+    }
+    [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+        color: #00e5ff !important;
+        border-bottom: 2px solid #00e5ff !important;
+        text-shadow: 0 0 10px #00e5ff88 !important;
+    }
+
+    /* ── Expanders (article cards) ── */
+    [data-testid="stExpander"] {
+        background: #0b1627 !important;
+        border: 1px solid #0ff2 !important;
+        border-radius: 6px !important;
+        margin-bottom: 0.5rem !important;
+        transition: border-color 0.2s !important;
+    }
+    [data-testid="stExpander"]:hover { border-color: #00e5ff44 !important; }
+    [data-testid="stExpander"] summary {
+        color: #c8d8e8 !important;
+        font-family: 'Exo 2', sans-serif !important;
+        font-weight: 600 !important;
+        font-size: 0.93rem !important;
+    }
+    [data-testid="stExpander"] summary:hover { color: #00e5ff !important; }
+
+    /* ── Dividers ── */
+    hr { border-color: #0ff1 !important; }
+
+    /* ── Status / progress box ── */
+    [data-testid="stStatus"] {
+        background: #0b1627 !important;
+        border: 1px solid #0ff2 !important;
+        color: #a0c4d8 !important;
+        font-family: 'Share Tech Mono', monospace !important;
+        font-size: 0.85rem !important;
+    }
+
+    /* ── Alerts ── */
+    [data-testid="stAlert"] {
+        background: #0b1627 !important;
+        border: 1px solid #00e5ff44 !important;
+        color: #a0c4d8 !important;
+        font-family: 'Exo 2', sans-serif !important;
+    }
+
+    /* ── Radio buttons ── */
+    [data-testid="stRadio"] label { color: #7aaec0 !important; font-size: 0.85rem !important; }
+    [data-testid="stRadio"] [aria-checked="true"] + div { color: #00e5ff !important; }
+
+    /* ── Download button ── */
+    [data-testid="stDownloadButton"] button {
+        background: #0b1627 !important;
+        border: 1px solid #00e5ff66 !important;
+        color: #00e5ff !important;
+        font-family: 'Share Tech Mono', monospace !important;
+        letter-spacing: 0.1em !important;
+        transition: all 0.3s !important;
+    }
+    [data-testid="stDownloadButton"] button:hover {
+        background: #00e5ff15 !important;
+        box-shadow: 0 0 20px #00e5ff44 !important;
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: #070b14; }
+    ::-webkit-scrollbar-thumb { background: #00e5ff44; border-radius: 2px; }
+
+    /* ── Custom components ── */
+    .main-title {
+        font-family: 'Exo 2', sans-serif !important;
+        font-size: 2.4rem !important;
+        font-weight: 800 !important;
+        letter-spacing: 0.02em !important;
+        color: #ffffff !important;
+        text-shadow: 0 0 30px #00e5ff66 !important;
+        margin-bottom: 0 !important;
+    }
+    .subtitle {
+        font-family: 'Share Tech Mono', monospace !important;
+        color: #3a6a7e !important;
+        font-size: 0.82rem !important;
+        letter-spacing: 0.18em !important;
+        text-transform: uppercase !important;
+        margin-top: 0.2rem !important;
+    }
     .summary-box {
-        background: #f0f4ff;
-        border-left: 4px solid #66b3ff;
-        padding: 1rem 1.2rem;
-        border-radius: 6px;
-        font-size: 0.97rem;
-        line-height: 1.7;
+        background: #0b1627;
+        border-left: 3px solid #00e5ff;
+        padding: 1.1rem 1.4rem;
+        border-radius: 0 6px 6px 0;
+        font-family: 'Exo 2', sans-serif;
+        font-size: 0.96rem;
+        line-height: 1.75;
+        color: #c8d8e8;
+        box-shadow: inset 0 0 40px #00e5ff08, 0 0 20px #00000044;
     }
     .impact-card {
-        background: #fff8f0;
-        border-left: 4px solid #ffaa44;
-        padding: 0.8rem 1.1rem;
-        border-radius: 6px;
+        background: #0c1828;
+        border-left: 3px solid #00b4d8;
+        padding: 0.75rem 1rem;
+        border-radius: 0 6px 6px 0;
         margin-bottom: 0.5rem;
-        font-size: 0.93rem;
-        line-height: 1.6;
+        font-family: 'Share Tech Mono', monospace;
+        font-size: 0.82rem;
+        line-height: 1.65;
+        color: #a0c4d8;
+        transition: border-color 0.2s;
     }
-    .article-meta { color: #888; font-size: 0.8rem; margin-bottom: 0.2rem; }
-    .badge-pos { background:#d4edff; color:#0066cc; border-radius:4px; padding:1px 7px; font-size:0.78rem; }
-    .badge-neg { background:#ffe0e0; color:#cc0000; border-radius:4px; padding:1px 7px; font-size:0.78rem; }
+    .impact-card:hover { border-left-color: #00e5ff; }
+    .article-meta {
+        font-family: 'Share Tech Mono', monospace;
+        color: #3a6a7e;
+        font-size: 0.75rem;
+        letter-spacing: 0.06em;
+        margin-bottom: 0.4rem;
+    }
+    .badge-pos {
+        background: #00e5ff18;
+        color: #00e5ff;
+        border: 1px solid #00e5ff44;
+        border-radius: 3px;
+        padding: 1px 8px;
+        font-family: 'Share Tech Mono', monospace;
+        font-size: 0.72rem;
+        letter-spacing: 0.05em;
+    }
+    .badge-neg {
+        background: #ff3c5218;
+        color: #ff6b8a;
+        border: 1px solid #ff3c5244;
+        border-radius: 3px;
+        padding: 1px 8px;
+        font-family: 'Share Tech Mono', monospace;
+        font-size: 0.72rem;
+        letter-spacing: 0.05em;
+    }
+
+    /* ── Subheaders ── */
+    h2, h3, [data-testid="stSubheader"] {
+        font-family: 'Exo 2', sans-serif !important;
+        color: #c8d8e8 !important;
+        letter-spacing: 0.04em !important;
+        border-bottom: 1px solid #0ff1 !important;
+        padding-bottom: 0.3rem !important;
+    }
+    p, li, .stMarkdown { color: #8aaec0 !important; }
+
+    /* ── Caption ── */
+    [data-testid="stCaptionContainer"] p {
+        font-family: 'Share Tech Mono', monospace !important;
+        color: #2a5a6e !important;
+        font-size: 0.72rem !important;
+        letter-spacing: 0.08em !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -208,44 +443,86 @@ Score is 0-10 (how strongly impacted). Direction must be: positive, negative, or
 
 
 # ─── Chart Functions ──────────────────────────────────────────────────────────
+CHART_BG    = '#070b14'
+CHART_PANEL = '#0b1627'
+CHART_TEXT  = '#5d8a9e'
+CHART_GRID  = '#0f2035'
+CYAN        = '#00e5ff'
+CORAL       = '#ff6b8a'
+MUTED       = '#3a5a6e'
+
+def _apply_dark_style(fig, ax_list):
+    """Apply consistent dark theme to any matplotlib figure."""
+    fig.patch.set_facecolor(CHART_BG)
+    for ax in (ax_list if isinstance(ax_list, (list, np.ndarray)) else [ax_list]):
+        ax.set_facecolor(CHART_PANEL)
+        ax.tick_params(colors=CHART_TEXT, labelsize=8)
+        ax.xaxis.label.set_color(CHART_TEXT)
+        ax.yaxis.label.set_color(CHART_TEXT)
+        ax.title.set_color('#c8d8e8')
+        for spine in ax.spines.values():
+            spine.set_edgecolor(CHART_GRID)
+        ax.grid(color=CHART_GRID, linewidth=0.5)
+
+
 def chart_sentiment_pie_and_hist(df: pd.DataFrame, topic: str):
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
-    fig.suptitle(f'Sentiment Overview — "{topic}"', fontsize=12, fontweight='bold')
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4), facecolor=CHART_BG)
+    fig.suptitle(f'SENTIMENT OVERVIEW — {topic.upper()}', fontsize=11,
+                 fontweight='bold', color='#c8d8e8', fontfamily='monospace')
+
     counts       = df['sentiment_label'].value_counts()
-    chart_colors = [COLORS.get(l, '#ccc') for l in counts.index]
-    axes[0].pie(counts, labels=[l.capitalize() for l in counts.index],
-                autopct='%1.1f%%', colors=chart_colors,
-                startangle=140, wedgeprops={'edgecolor': 'white'})
-    axes[0].set_title('Sentiment Split')
-    sns.histplot(df['sentiment_score'], bins=10, kde=True, color='skyblue', ax=axes[1])
-    axes[1].set_title('Confidence Distribution')
-    axes[1].set_xlabel('Confidence Score')
-    axes[1].set_ylabel('Articles')
+    dark_colors  = {'positive': CYAN, 'negative': CORAL, 'neutral': MUTED}
+    chart_colors = [dark_colors.get(l, '#445566') for l in counts.index]
+
+    axes[0].set_facecolor(CHART_BG)
+    wedges, texts, autotexts = axes[0].pie(
+        counts, labels=[l.upper() for l in counts.index],
+        autopct='%1.1f%%', colors=chart_colors,
+        startangle=140, wedgeprops={'edgecolor': CHART_BG, 'linewidth': 2}
+    )
+    for t in texts: t.set_color(CHART_TEXT); t.set_fontsize(8)
+    for at in autotexts: at.set_color('#070b14'); at.set_fontweight('bold'); at.set_fontsize(8)
+    axes[0].set_title('SENTIMENT SPLIT', fontsize=9, color='#c8d8e8', fontfamily='monospace', pad=10)
+
+    axes[1].set_facecolor(CHART_PANEL)
+    sns.histplot(df['sentiment_score'], bins=10, kde=True, color=CYAN, ax=axes[1],
+                 alpha=0.3, line_kws={'color': CYAN, 'linewidth': 2})
+    axes[1].set_title('CONFIDENCE DISTRIBUTION', fontsize=9, color='#c8d8e8', fontfamily='monospace')
+    axes[1].set_xlabel('Confidence Score', color=CHART_TEXT, fontsize=8)
+    axes[1].set_ylabel('Articles', color=CHART_TEXT, fontsize=8)
+    axes[1].tick_params(colors=CHART_TEXT, labelsize=8)
+    for spine in axes[1].spines.values(): spine.set_edgecolor(CHART_GRID)
+    axes[1].grid(color=CHART_GRID, linewidth=0.5)
+
     plt.tight_layout()
     st.pyplot(fig)
     plt.close()
 
 
 def chart_timeline(df: pd.DataFrame):
-    daily    = df.copy()
+    daily         = df.copy()
     daily['date'] = daily['publishedAt'].dt.date
-    timeline = daily.groupby(['date', 'sentiment_label']).size().unstack(fill_value=0)
+    timeline      = daily.groupby(['date', 'sentiment_label']).size().unstack(fill_value=0)
     for col in ['positive', 'negative', 'neutral']:
         if col not in timeline.columns:
             timeline[col] = 0
+
     fig, ax = plt.subplots(figsize=(11, 3.5))
-    ax.plot(timeline.index, timeline['positive'], marker='o', color='#66b3ff', label='Positive', linewidth=2)
-    ax.plot(timeline.index, timeline['negative'], marker='o', color='#ff9999', label='Negative', linewidth=2)
-    ax.plot(timeline.index, timeline['neutral'],  marker='o', color='#d3d3d3', label='Neutral',  linewidth=2)
-    ax.fill_between(timeline.index, timeline['positive'], alpha=0.15, color='#66b3ff')
-    ax.fill_between(timeline.index, timeline['negative'], alpha=0.15, color='#ff9999')
-    ax.fill_between(timeline.index, timeline['neutral'],  alpha=0.10, color='#d3d3d3')
-    ax.set_title('Sentiment Trend Over Time', fontweight='bold')
-    ax.set_xlabel('Date')
-    ax.set_ylabel('Number of Articles')
-    ax.legend()
+    _apply_dark_style(fig, ax)
+
+    ax.plot(timeline.index, timeline['positive'], marker='o', color=CYAN,    label='POSITIVE', linewidth=2, markersize=4)
+    ax.plot(timeline.index, timeline['negative'], marker='o', color=CORAL,   label='NEGATIVE', linewidth=2, markersize=4)
+    ax.plot(timeline.index, timeline['neutral'],  marker='o', color=MUTED,   label='NEUTRAL',  linewidth=2, markersize=4)
+    ax.fill_between(timeline.index, timeline['positive'], alpha=0.08, color=CYAN)
+    ax.fill_between(timeline.index, timeline['negative'], alpha=0.08, color=CORAL)
+    ax.fill_between(timeline.index, timeline['neutral'],  alpha=0.06, color=MUTED)
+
+    ax.set_title('SENTIMENT TREND OVER TIME', fontsize=9, color='#c8d8e8', fontfamily='monospace')
+    ax.set_xlabel('Date', color=CHART_TEXT, fontsize=8)
+    ax.set_ylabel('Articles', color=CHART_TEXT, fontsize=8)
+    legend = ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_GRID, labelcolor=CHART_TEXT, fontsize=8)
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
-    plt.xticks(rotation=30)
+    plt.xticks(rotation=30, color=CHART_TEXT)
     plt.tight_layout()
     st.pyplot(fig)
     plt.close()
@@ -257,35 +534,42 @@ def chart_by_source(df: pd.DataFrame, topic: str):
         if col not in src.columns:
             src[col] = 0
     src = src[['negative', 'neutral', 'positive']]
+
     fig, ax = plt.subplots(figsize=(11, 3.5))
-    src.plot(kind='bar',
-             color=[COLORS['negative'], COLORS['neutral'], COLORS['positive']],
-             edgecolor='white', ax=ax)
-    ax.set_title(f'Sentiment by Source — "{topic}"', fontweight='bold')
-    ax.set_xlabel('Source')
-    ax.set_ylabel('Articles')
-    plt.xticks(rotation=40, ha='right')
+    _apply_dark_style(fig, ax)
+
+    src.plot(kind='bar', color=[CORAL, MUTED, CYAN], edgecolor=CHART_BG, ax=ax, width=0.65)
+    ax.set_title(f'SENTIMENT BY SOURCE — {topic.upper()}', fontsize=9, color='#c8d8e8', fontfamily='monospace')
+    ax.set_xlabel('Source', color=CHART_TEXT, fontsize=8)
+    ax.set_ylabel('Articles', color=CHART_TEXT, fontsize=8)
+    legend = ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_GRID, labelcolor=CHART_TEXT, fontsize=8)
+    plt.xticks(rotation=40, ha='right', color=CHART_TEXT, fontsize=8)
     plt.tight_layout()
     st.pyplot(fig)
     plt.close()
 
 
 def chart_radar(impact_data: dict):
-    sectors = list(impact_data['sectors'].keys())
-    scores  = [impact_data['sectors'][s]['score'] for s in sectors]
-    N       = len(sectors)
-    angles  = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
+    sectors     = list(impact_data['sectors'].keys())
+    scores      = [impact_data['sectors'][s]['score'] for s in sectors]
+    N           = len(sectors)
+    angles      = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
     scores_plot = scores + [scores[0]]
     angles      = angles + [angles[0]]
-    fig, ax = plt.subplots(figsize=(5, 5), subplot_kw=dict(polar=True))
-    ax.plot(angles, scores_plot, 'o-', linewidth=2, color='#ff7043')
-    ax.fill(angles, scores_plot, alpha=0.25, color='#ff7043')
+
+    fig, ax = plt.subplots(figsize=(5, 5), subplot_kw=dict(polar=True), facecolor=CHART_BG)
+    ax.set_facecolor(CHART_PANEL)
+    ax.plot(angles, scores_plot, 'o-', linewidth=2, color=CYAN)
+    ax.fill(angles, scores_plot, alpha=0.15, color=CYAN)
     ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(sectors, fontsize=9)
+    ax.set_xticklabels(sectors, fontsize=7.5, color=CHART_TEXT, fontfamily='monospace')
     ax.set_ylim(0, 10)
     ax.set_yticks([2, 4, 6, 8, 10])
-    ax.set_yticklabels(['2', '4', '6', '8', '10'], fontsize=7)
-    ax.set_title('Impact by Sector\n(0 = none, 10 = major)', fontsize=10, fontweight='bold', pad=15)
+    ax.set_yticklabels(['2', '4', '6', '8', '10'], fontsize=6, color=CHART_TEXT)
+    ax.grid(color=CHART_GRID, linewidth=0.8)
+    ax.spines['polar'].set_color(CHART_GRID)
+    ax.set_title('IMPACT BY SECTOR\n0 = none  ·  10 = major',
+                 fontsize=8, color='#c8d8e8', fontfamily='monospace', pad=15)
     plt.tight_layout()
     st.pyplot(fig)
     plt.close()
@@ -311,7 +595,7 @@ def render_articles(df: pd.DataFrame):
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown('###  News Sentiment Dashboard')
+    st.markdown('### ⬡ AI SENTIMENT ANALYSER')
     st.divider()
     topic      = st.text_input('Search Topic', placeholder='e.g. War, Tesla, AI...')
     max_art    = st.slider('Number of Articles', 5, 20, 15, 5)
@@ -335,8 +619,8 @@ with st.sidebar:
     st.caption('News: NewsAPI')
 
 # ─── Header ───────────────────────────────────────────────────────────────────
-st.markdown('<p class="main-title"> News Sentiment Dashboard</p>', unsafe_allow_html=True)
-st.markdown('<p class="subtitle">Live news · AI sentiment · impact analysis · deep dive articles</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title"> ⬡ UNVEILING SENTIMENTS</p>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle"> ◈ deep learning nlp · real-time news decoding </p>', unsafe_allow_html=True)
 st.divider()
 
 # ─── Run Analysis ─────────────────────────────────────────────────────────────
