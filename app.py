@@ -12,6 +12,9 @@ import streamlit as st
 from groq import Groq
 from datetime import datetime, timezone
 from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
+from dotenv import load_dotenv
+
+load_dotenv()  # reads .env locally; no-op on Streamlit Cloud (uses Secrets)
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -29,7 +32,6 @@ SENTIMENT_BATCH_SIZE = 8
 SUMMARY_TOP_N        = 10
 SUMMARY_MAX_LEN      = 180
 SUMMARY_MIN_LEN      = 50
-COLORS               = {'positive': '#66b3ff', 'negative': '#ff9999', 'neutral': '#d3d3d3'}
 ACTION_ITEMS_LIMIT   = 4
 
 # ─── Page Config ─────────────────────────────────────────────────────────────
@@ -324,27 +326,22 @@ def load_sentiment_model():
 
 @st.cache_resource(show_spinner=False)
 def load_summarization_model():
+    device    = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     tokenizer = AutoTokenizer.from_pretrained(SUMMARIZATION_MODEL)
-    model     = AutoModelForSeq2SeqLM.from_pretrained(SUMMARIZATION_MODEL)
+    model     = AutoModelForSeq2SeqLM.from_pretrained(SUMMARIZATION_MODEL).to(device)
     model.eval()
     return tokenizer, model
 
 
-@st.cache_resource(show_spinner=False)
-def get_http_session():
-    """Reuse TCP connections for NewsAPI calls to reduce request overhead."""
-    return requests.Session()
-
 # ─── Core Functions ───────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False, ttl=FETCH_TTL_SECONDS)
 def fetch_articles(api_key: str, query: str, page_size: int) -> list:
-    # Cached fetch avoids repeated API calls when users rerun the same query.
+    # Result is cached for FETCH_TTL_SECONDS so repeated queries skip the API call.
     params = {
         'q': query, 'language': 'en',
         'pageSize': page_size, 'sortBy': 'publishedAt', 'apiKey': api_key
     }
-    session = get_http_session()
-    r = session.get(NEWS_API_URL, params=params, timeout=REQUEST_TIMEOUT)
+    r = requests.get(NEWS_API_URL, params=params, timeout=REQUEST_TIMEOUT)
     r.raise_for_status()
     data = r.json()
     if data.get('status') != 'ok':
@@ -370,7 +367,6 @@ def clean_articles(articles: list) -> pd.DataFrame:
 
 def run_sentiment(df: pd.DataFrame) -> pd.DataFrame:
     model = load_sentiment_model()
-    # Combine title + description for better context (FinBERT understands news language)
     texts = (
         df['title'] + '. ' +
         df['description'].replace('No description available.', '')
@@ -379,17 +375,17 @@ def run_sentiment(df: pd.DataFrame) -> pd.DataFrame:
     with torch.no_grad():
         for i in range(0, len(texts), SENTIMENT_BATCH_SIZE):
             results.extend(model(texts[i:i + SENTIMENT_BATCH_SIZE]))
-    # FinBERT returns lowercase labels: positive / negative / neutral
-    df['sentiment_label'] = [r['label'].lower() for r in results]
-    df['sentiment_score'] = [round(r['score'], 4) for r in results]
-    return df
+    out = df.copy()  # never mutate the input DataFrame
+    out['sentiment_label'] = [r['label'].lower() for r in results]
+    out['sentiment_score'] = [round(r['score'], 4) for r in results]
+    return out
 
 
 def run_summarization(df: pd.DataFrame) -> str:
     tokenizer, model = load_summarization_model()
-    device   = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model    = model.to(device)
-    top      = df.head(SUMMARY_TOP_N)
+    # model is already on the correct device from load_summarization_model()
+    device = next(model.parameters()).device
+    top    = df.head(SUMMARY_TOP_N)
     # Feed one compact context string from top stories for a stable summary.
     combined = ' . '.join(
         f"{row['title']}: {row['description']}"
@@ -409,13 +405,21 @@ def run_summarization(df: pd.DataFrame) -> str:
 
 
 def run_extractive_summary(df: pd.DataFrame) -> str:
-    """Fast fallback summary for better responsiveness on CPU-only machines."""
+    """Fast summary — HTML bullet list so it renders correctly in the summary-box div."""
     top = df.head(5)
-    bullets = []
+    items = []
     for _, row in top.iterrows():
         sentiment = row['sentiment_label'].capitalize()
-        bullets.append(f"- {row['title']} ({sentiment}, {row['sentiment_score']:.0%} confidence)")
-    return '\n'.join(bullets)
+        color = {'Positive': '#00e5ff', 'Negative': '#ff6b8a'}.get(sentiment, '#3a5a6e')
+        items.append(
+            f'<li style="margin-bottom:0.4rem;">'
+            f'<span style="color:{color};font-weight:600;">[{sentiment}]</span> '
+            f'{row["title"]} '
+            f'<span style="color:#3a5a6e;font-size:0.82rem;">({row["sentiment_score"]:.0%})</span>'
+            f'</li>'
+        )
+    return f'<ul style="padding-left:1.2rem;margin:0;">{"".join(items)}</ul>'
+
 
 
 def run_actionable_guidance(topic: str, summary: str, df: pd.DataFrame) -> dict | None:
@@ -559,7 +563,7 @@ def chart_timeline(df: pd.DataFrame):
     ax.set_title('SENTIMENT TREND OVER TIME', fontsize=9, color='#c8d8e8', fontfamily='monospace')
     ax.set_xlabel('Date', color=CHART_TEXT, fontsize=8)
     ax.set_ylabel('Articles', color=CHART_TEXT, fontsize=8)
-    legend = ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_GRID, labelcolor=CHART_TEXT, fontsize=8)
+    ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_GRID, labelcolor=CHART_TEXT, fontsize=8)
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
     plt.xticks(rotation=30, color=CHART_TEXT)
     plt.tight_layout()
@@ -581,7 +585,7 @@ def chart_by_source(df: pd.DataFrame, topic: str):
     ax.set_title(f'SENTIMENT BY SOURCE — {topic.upper()}', fontsize=9, color='#c8d8e8', fontfamily='monospace')
     ax.set_xlabel('Source', color=CHART_TEXT, fontsize=8)
     ax.set_ylabel('Articles', color=CHART_TEXT, fontsize=8)
-    legend = ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_GRID, labelcolor=CHART_TEXT, fontsize=8)
+    ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_GRID, labelcolor=CHART_TEXT, fontsize=8)
     plt.xticks(rotation=40, ha='right', color=CHART_TEXT, fontsize=8)
     plt.tight_layout()
     st.pyplot(fig)
