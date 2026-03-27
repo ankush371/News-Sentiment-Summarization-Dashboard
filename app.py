@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 NEWS_API_URL         = 'https://newsapi.org/v2/everything'
 MAX_ARTICLES         = 20
 REQUEST_TIMEOUT      = 10
+FETCH_TTL_SECONDS    = 300
 SENTIMENT_MODEL      = 'ProsusAI/finbert'           # trained on financial/tech news
 SUMMARIZATION_MODEL  = 'sshleifer/distilbart-cnn-12-6'
 GROQ_MODEL           = 'llama-3.3-70b-versatile'
@@ -29,7 +30,7 @@ SUMMARY_TOP_N        = 10
 SUMMARY_MAX_LEN      = 180
 SUMMARY_MIN_LEN      = 50
 COLORS               = {'positive': '#66b3ff', 'negative': '#ff9999', 'neutral': '#d3d3d3'}
-IMPACT_SECTORS       = ['Global Markets', 'Politics', 'Technology', 'Energy', 'Public Health', 'Trade & Economy']
+ACTION_ITEMS_LIMIT   = 4
 
 # ─── Page Config ─────────────────────────────────────────────────────────────
 st.set_page_config(page_title='News Sentiment Dashboard', page_icon='📰', layout='wide')
@@ -312,7 +313,7 @@ if not NEWS_API_KEY:
     st.stop()
 
 if not GROQ_API_KEY:
-    st.warning(' GROQ_API_KEY is not set — Impact Analysis will be disabled. Add it to your .env file.')
+    st.warning(' GROQ_API_KEY is not set — AI action guidance will be disabled. Add it to your .env file.')
 
 # ─── Model Loaders ────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
@@ -328,14 +329,22 @@ def load_summarization_model():
     model.eval()
     return tokenizer, model
 
+
+@st.cache_resource(show_spinner=False)
+def get_http_session():
+    """Reuse TCP connections for NewsAPI calls to reduce request overhead."""
+    return requests.Session()
+
 # ─── Core Functions ───────────────────────────────────────────────────────────
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=FETCH_TTL_SECONDS)
 def fetch_articles(api_key: str, query: str, page_size: int) -> list:
+    # Cached fetch avoids repeated API calls when users rerun the same query.
     params = {
         'q': query, 'language': 'en',
         'pageSize': page_size, 'sortBy': 'publishedAt', 'apiKey': api_key
     }
-    r = requests.get(NEWS_API_URL, params=params, timeout=REQUEST_TIMEOUT)
+    session = get_http_session()
+    r = session.get(NEWS_API_URL, params=params, timeout=REQUEST_TIMEOUT)
     r.raise_for_status()
     data = r.json()
     if data.get('status') != 'ok':
@@ -354,6 +363,8 @@ def clean_articles(articles: list) -> pd.DataFrame:
     out['description'] = out['description'].fillna('').str.strip().replace('', 'No description available.')
     out['publishedAt'] = pd.to_datetime(out['publishedAt'], utc=True, errors='coerce')
     out = out.dropna(subset=['publishedAt'])
+    # Remove near-duplicate stories syndicated across sources.
+    out = out.drop_duplicates(subset=['title', 'source_name']).reset_index(drop=True)
     return out.sort_values('publishedAt', ascending=False).reset_index(drop=True)
 
 
@@ -379,6 +390,7 @@ def run_summarization(df: pd.DataFrame) -> str:
     device   = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model    = model.to(device)
     top      = df.head(SUMMARY_TOP_N)
+    # Feed one compact context string from top stories for a stable summary.
     combined = ' . '.join(
         f"{row['title']}: {row['description']}"
         for _, row in top.iterrows()
@@ -396,37 +408,52 @@ def run_summarization(df: pd.DataFrame) -> str:
     return tokenizer.decode(ids[0], skip_special_tokens=True)
 
 
-def run_impact_analysis(topic: str, summary: str, sentiment_ratio: float) -> dict | None:
-    """Use Groq (free) to analyse how this news impacts related sectors."""
+def run_extractive_summary(df: pd.DataFrame) -> str:
+    """Fast fallback summary for better responsiveness on CPU-only machines."""
+    top = df.head(5)
+    bullets = []
+    for _, row in top.iterrows():
+        sentiment = row['sentiment_label'].capitalize()
+        bullets.append(f"- {row['title']} ({sentiment}, {row['sentiment_score']:.0%} confidence)")
+    return '\n'.join(bullets)
+
+
+def run_actionable_guidance(topic: str, summary: str, df: pd.DataFrame) -> dict | None:
+    """Generate customer-facing actions rather than broad sector categorization."""
     if not GROQ_API_KEY:
         return None
     try:
         client = Groq(api_key=GROQ_API_KEY)
-        prompt = f"""You are an expert analyst. Given this news topic and summary, analyse the potential impact on each of these sectors: {', '.join(IMPACT_SECTORS)}.
+        pos = int((df['sentiment_label'] == 'positive').sum())
+        neg = int((df['sentiment_label'] == 'negative').sum())
+        neu = int((df['sentiment_label'] == 'neutral').sum())
+
+        prompt = f"""You are a pragmatic advisor for a business user.
 
 Topic: {topic}
 Summary: {summary}
-Overall sentiment: {'Mostly positive' if sentiment_ratio >= 0.5 else 'Mostly negative'} ({sentiment_ratio:.0%} positive)
+Sentiment counts -> positive: {pos}, negative: {neg}, neutral: {neu}
 
-Respond ONLY with a valid JSON object — no preamble, no explanation, no markdown code fences. Format exactly:
+Return ONLY valid JSON (no markdown), using this exact schema:
 {{
-  "sectors": {{
-    "Global Markets": {{"score": 7, "direction": "negative", "reason": "one sentence explanation"}},
-    "Politics": {{"score": 4, "direction": "positive", "reason": "one sentence explanation"}},
-    "Technology": {{"score": 2, "direction": "neutral", "reason": "one sentence explanation"}},
-    "Energy": {{"score": 8, "direction": "negative", "reason": "one sentence explanation"}},
-    "Public Health": {{"score": 1, "direction": "neutral", "reason": "one sentence explanation"}},
-    "Trade & Economy": {{"score": 6, "direction": "negative", "reason": "one sentence explanation"}}
-  }},
-  "headline_impact": "One sentence overall impact statement.",
-  "most_affected": "Sector name"
+    "executive_brief": "1-2 sentence plain-English takeaway for decision makers",
+    "risk_level": "low|medium|high",
+    "what_it_means": [
+        "exactly 3 concise bullet points"
+    ],
+    "suggested_actions": [
+        "3 to 4 concrete actions the customer can take in the next 24-72 hours"
+    ]
 }}
 
-Score is 0-10 (how strongly impacted). Direction must be: positive, negative, or neutral."""
+Rules:
+- Keep language specific and practical.
+- Avoid sector-level categorization.
+- Suggested actions must be actionable and measurable."""
 
         response = client.chat.completions.create(
             model=GROQ_MODEL,
-            max_tokens=800,
+            max_tokens=550,
             temperature=0.3,
             messages=[{'role': 'user', 'content': prompt}]
         )
@@ -436,9 +463,21 @@ Score is 0-10 (how strongly impacted). Direction must be: positive, negative, or
             raw = raw.split('```')[1]
             if raw.startswith('json'):
                 raw = raw[4:]
-        return json.loads(raw.strip())
+
+        parsed = json.loads(raw.strip())
+        # Defensive normalization keeps UI/export stable even with imperfect model output.
+        if not isinstance(parsed.get('what_it_means'), list):
+            parsed['what_it_means'] = []
+        if not isinstance(parsed.get('suggested_actions'), list):
+            parsed['suggested_actions'] = []
+        parsed['what_it_means'] = parsed['what_it_means'][:3]
+        parsed['suggested_actions'] = parsed['suggested_actions'][:ACTION_ITEMS_LIMIT]
+        parsed['risk_level'] = str(parsed.get('risk_level', 'medium')).lower()
+        if parsed['risk_level'] not in {'low', 'medium', 'high'}:
+            parsed['risk_level'] = 'medium'
+        return parsed
     except Exception as e:
-        log.error('Impact analysis failed: %s', e)
+        log.error('Action guidance failed: %s', e)
         return None
 
 
@@ -549,32 +588,6 @@ def chart_by_source(df: pd.DataFrame, topic: str):
     plt.close()
 
 
-def chart_radar(impact_data: dict):
-    sectors     = list(impact_data['sectors'].keys())
-    scores      = [impact_data['sectors'][s]['score'] for s in sectors]
-    N           = len(sectors)
-    angles      = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
-    scores_plot = scores + [scores[0]]
-    angles      = angles + [angles[0]]
-
-    fig, ax = plt.subplots(figsize=(5, 5), subplot_kw=dict(polar=True), facecolor=CHART_BG)
-    ax.set_facecolor(CHART_PANEL)
-    ax.plot(angles, scores_plot, 'o-', linewidth=2, color=CYAN)
-    ax.fill(angles, scores_plot, alpha=0.15, color=CYAN)
-    ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(sectors, fontsize=7.5, color=CHART_TEXT, fontfamily='monospace')
-    ax.set_ylim(0, 10)
-    ax.set_yticks([2, 4, 6, 8, 10])
-    ax.set_yticklabels(['2', '4', '6', '8', '10'], fontsize=6, color=CHART_TEXT)
-    ax.grid(color=CHART_GRID, linewidth=0.8)
-    ax.spines['polar'].set_color(CHART_GRID)
-    ax.set_title('IMPACT BY SECTOR\n0 = none  ·  10 = major',
-                 fontsize=8, color='#c8d8e8', fontfamily='monospace', pad=15)
-    plt.tight_layout()
-    st.pyplot(fig)
-    plt.close()
-
-
 # ─── Article Cards ─────────────────────────────────────────────────────────────
 def render_articles(df: pd.DataFrame):
     for _, row in df.iterrows():
@@ -599,6 +612,7 @@ with st.sidebar:
     st.divider()
     topic      = st.text_input('Search Topic', placeholder='e.g. War, Tesla, AI...')
     max_art    = st.slider('Number of Articles', 5, 20, 15, 5)
+    analysis_mode = st.selectbox('Analysis Mode', ['Fast', 'Deep'], help='Fast mode is quicker. Deep mode uses transformer summarization + AI guidance.')
     run_button = st.button(' Analyze', use_container_width=True, type='primary')
     st.divider()
 
@@ -614,8 +628,8 @@ with st.sidebar:
 
     st.divider()
     st.caption('Sentiment: FinBERT (news-trained)')
-    st.caption('Summary: DistilBART')
-    st.caption('Impact: Groq LLaMA 3.3 (free)')
+    st.caption('Summary: Fast extractive or Deep DistilBART')
+    st.caption('Guidance: Groq LLaMA 3.3 (optional)')
     st.caption('News: NewsAPI')
 
 # ─── Header ───────────────────────────────────────────────────────────────────
@@ -656,23 +670,29 @@ if run_button:
 
         st.write(' Generating summary...')
         summary = ''
-        try:
-            summary = run_summarization(df)
-        except Exception as e:
-            log.error('Summarization failed: %s', e)
+        if analysis_mode == 'Fast':
+            # Fast mode skips transformer generation to reduce latency.
+            summary = run_extractive_summary(df)
+        else:
+            try:
+                summary = run_summarization(df)
+            except Exception as e:
+                log.error('Summarization failed: %s', e)
+                # Always fall back so users still get a result.
+                summary = run_extractive_summary(df)
 
-        impact_data = None
+        guidance_data = None
         if GROQ_API_KEY and summary:
-            st.write(' Analysing broader impact with Groq LLaMA...')
-            pos_ratio   = (df['sentiment_label'] == 'positive').mean()
-            impact_data = run_impact_analysis(topic.strip(), summary, pos_ratio)
+            st.write(' Generating customer action guidance...')
+            guidance_data = run_actionable_guidance(topic.strip(), summary, df)
 
     result = {
         'topic':       topic.strip(),
         'time':        datetime.now().strftime('%H:%M'),
         'df':          df,
         'summary':     summary,
-        'impact_data': impact_data,
+        'guidance_data': guidance_data,
+        'analysis_mode': analysis_mode,
         'pos':         int((df['sentiment_label'] == 'positive').sum()),
         'neg':         int((df['sentiment_label'] == 'negative').sum()),
         'neu':         int((df['sentiment_label'] == 'neutral').sum()),
@@ -687,14 +707,14 @@ res = st.session_state.results
 if res:
     df          = res['df']
     summary     = res['summary']
-    impact_data = res['impact_data']
+    guidance_data = res.get('guidance_data')
     rtopic      = res['topic']
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric(' Articles',        len(df))
-    c2.metric(' Positive',        int((df['sentiment_label'] == 'positive').sum()))
-    c3.metric(' Negative',        int((df['sentiment_label'] == 'negative').sum()))
-    c4.metric(' Neutral',         int((df['sentiment_label'] == 'neutral').sum()))
+    c2.metric(' Positive',        res['pos'])
+    c3.metric(' Negative',        res['neg'])
+    c4.metric(' Neutral',         res['neu'])
     c5.metric(' Avg Confidence',  f"{res['avg_score']:.0%}")
     st.divider()
 
@@ -703,25 +723,25 @@ if res:
         st.markdown(f'<div class="summary-box">{summary}</div>', unsafe_allow_html=True)
         st.divider()
 
-    if impact_data:
-        st.subheader(' Broader Impact Analysis')
-        st.info(f"**{impact_data.get('headline_impact', '')}**")
-        left, right = st.columns([1, 1])
+    if guidance_data:
+        st.subheader(' Customer Action Brief')
+        risk_color = {'low': '#00d084', 'medium': '#f5c542', 'high': '#ff6b6b'}.get(guidance_data.get('risk_level', 'medium'), '#f5c542')
+        st.info(f"**{guidance_data.get('executive_brief', '')}**")
+        left, right = st.columns([1.2, 1])
         with left:
-            chart_radar(impact_data)
+            st.markdown('**What this means**')
+            for item in guidance_data.get('what_it_means', []):
+                st.markdown(f'- {item}')
         with right:
-            st.markdown(f"**Most affected sector:** `{impact_data.get('most_affected', 'N/A')}`")
+            st.markdown('**Risk Level**')
+            st.markdown(
+                f'<div style="padding:0.5rem 0.8rem;border-left:3px solid {risk_color};background:#0c1828;border-radius:0 6px 6px 0;text-transform:uppercase;letter-spacing:0.08em;">{guidance_data.get("risk_level", "medium")}</div>',
+                unsafe_allow_html=True
+            )
             st.markdown('')
-            for sector, info in impact_data['sectors'].items():
-                direction_icon = {'positive': '🟢', 'negative': '🔴', 'neutral': '⚪'}.get(info['direction'], '⚪')
-                score_bar = '█' * info['score'] + '░' * (10 - info['score'])
-                st.markdown(
-                    f'<div class="impact-card">'
-                    f'<b>{direction_icon} {sector}</b> &nbsp; <code>{score_bar}</code> {info["score"]}/10<br>'
-                    f'{info["reason"]}'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
+            st.markdown('**Suggested actions (24-72h)**')
+            for action in guidance_data.get('suggested_actions', []):
+                st.markdown(f'- {action}')
         st.divider()
 
     st.subheader(' Visual Insights')
@@ -735,10 +755,16 @@ if res:
     st.divider()
 
     st.subheader(' Articles')
-    filter_col, _ = st.columns([2, 3])
+    filter_col, source_col, sort_col = st.columns([2, 2, 2])
     with filter_col:
         sentiment_filter = st.radio('Filter by sentiment',
                                     ['All', 'Positive only', 'Negative only', 'Neutral only'], horizontal=True)
+    with source_col:
+        source_options = sorted(df['source_name'].dropna().unique().tolist())
+        source_filter = st.multiselect('Filter by source', source_options, default=source_options)
+    with sort_col:
+        sort_by = st.selectbox('Sort by', ['Newest first', 'Highest confidence', 'Most positive', 'Most negative'])
+
     filtered = df.copy()
     if sentiment_filter == 'Positive only':
         filtered = df[df['sentiment_label'] == 'positive'].reset_index(drop=True)
@@ -747,6 +773,21 @@ if res:
     elif sentiment_filter == 'Neutral only':
         filtered = df[df['sentiment_label'] == 'neutral'].reset_index(drop=True)
 
+    filtered = filtered[filtered['source_name'].isin(source_filter)].reset_index(drop=True)
+    # Explicit rank avoids alphabetical ordering artifacts when sorting sentiments.
+    sentiment_rank = {'negative': 0, 'neutral': 1, 'positive': 2}
+    filtered['sentiment_rank'] = filtered['sentiment_label'].map(sentiment_rank).fillna(1)
+
+    if sort_by == 'Highest confidence':
+        filtered = filtered.sort_values('sentiment_score', ascending=False).reset_index(drop=True)
+    elif sort_by == 'Most positive':
+        filtered = filtered.sort_values(['sentiment_rank', 'sentiment_score'], ascending=[False, False]).reset_index(drop=True)
+    elif sort_by == 'Most negative':
+        filtered = filtered.sort_values(['sentiment_rank', 'sentiment_score'], ascending=[True, False]).reset_index(drop=True)
+    else:
+        filtered = filtered.sort_values('publishedAt', ascending=False).reset_index(drop=True)
+    filtered = filtered.drop(columns=['sentiment_rank'])
+
     st.caption(f'Showing {len(filtered)} of {len(df)} articles')
     render_articles(filtered)
     st.divider()
@@ -754,6 +795,12 @@ if res:
     export = df.copy()
     export['summary']     = summary
     export['topic']       = rtopic
+    export['analysis_mode'] = res.get('analysis_mode', 'Deep')
+    if guidance_data:
+        export['executive_brief'] = guidance_data.get('executive_brief', '')
+        export['risk_level']      = guidance_data.get('risk_level', '')
+        # Flatten list for CSV compatibility.
+        export['suggested_actions'] = ' | '.join(guidance_data.get('suggested_actions', []))
     export['exported_at'] = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
     csv        = export.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
     safe_topic = rtopic.replace(' ', '_').replace('/', '-')
